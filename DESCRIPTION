@@ -1,0 +1,41 @@
+Package: spatialTV
+Type: Package
+Title: Spatial Transcriptomics Analysis with Total Variation Regularization
+Version: 0.1.0
+Date: 2025-11-03
+Authors@R: c(
+    person("Tom", "Liu", email = "liutom@umich.edu", role = c("aut", "cre")),
+    person("University of Michigan", role = "cph")
+    )
+Description: Implements spatially-aware cell type deconvolution for spatial 
+    transcriptomics data using Total Variation (TV) regularization. The package 
+    uses Fast Iterative Shrinkage-Thresholding Algorithm (FISTA) for efficient 
+    optimization with weighted soft-L1 TV penalty. It learns low-rank cell type 
+    dictionaries and per-spot mixture proportions while enforcing spatial 
+    smoothness through a Delaunay graph structure.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Depends: 
+    R (>= 3.5.0)
+Imports:
+    Rcpp (>= 1.0.0),
+    Matrix (>= 1.2-0),
+    methods
+LinkingTo: 
+    Rcpp,
+    RcppArmadillo
+Suggests:
+    CVXR (>= 1.0),
+    interp,
+    ggplot2 (>= 3.0.0),
+    viridis,
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    covr
+SystemRequirements: C++11
+VignetteBuilder: knitr
+RoxygenNote: 7.2.0
+URL: https://github.com/liutom445/spatialTV
+BugReports: https://github.com/liutom445/spatialTV/issues

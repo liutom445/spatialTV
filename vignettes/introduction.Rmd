@@ -1,0 +1,384 @@
+---
+title: "Introduction to spatialTV"
+author: "Tom Liu"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to spatialTV}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Overview
+
+The `spatialTV` package implements spatially-aware cell type deconvolution for spatial transcriptomics data using Total Variation (TV) regularization. It combines:
+
+1. **Low-rank factorization**: Learns a compact dictionary of cell type patterns
+2. **Spatial regularization**: Enforces smoothness via TV penalty on spatial graphs
+3. **Efficient optimization**: Uses FISTA algorithm with accelerated gradient descent
+4. **Adaptive weighting**: Optionally learns edge-specific importance weights
+
+## Installation
+
+```{r, eval=FALSE}
+# From CRAN (once published)
+install.packages("spatialTV")
+
+# Development version from GitHub
+# install.packages("devtools")
+devtools::install_github("liutom445/spatialTV")
+```
+
+## Quick Start
+
+```{r quickstart, eval=FALSE}
+library(spatialTV)
+
+# Load your data
+# S: cell type scores from RCTD or similar (N x K matrix)
+# coords: spatial coordinates (N x 2 matrix)
+
+# Build spatial graph
+A <- build_spatial_graph(coords)
+
+# Initialize dictionary
+B_init <- initialize_dictionary(S, D = 3, method = "kmeans")
+
+# Fit model
+result <- fit_spatial_mixture(
+  S = S,
+  A = A,
+  B = B_init,
+  lambda = 2.0
+)
+
+# Extract results
+X <- result$X  # Mixture proportions (N x D)
+B <- result$B  # Cell type dictionary (K x D)
+
+# Convert to cell type proportions
+cell_props <- components_to_celltypes(X, B)
+```
+
+## Mathematical Framework
+
+### Problem Formulation
+
+Given:
+- **S**: Cell type scores from deconvolution (N spots × K cell types)
+- **A**: Spatial graph incidence matrix (m edges × N spots)
+- **w**: Edge weights (m-dimensional)
+
+We learn:
+- **X**: Per-spot mixture components (N × D), rows on simplex
+- **B**: Cell type dictionary (K × D), columns on simplex
+
+The objective function is:
+
+$$
+\min_{X,B} \underbrace{-\sum_{i=1}^N \log z_i}_{\text{Data fidelity}} + 
+\lambda \underbrace{\sum_{e=1}^m w_e \sum_{d=1}^D \sqrt{(AX)_{ed}^2 + \delta}}_{\text{Spatial TV penalty}}
+$$
+
+where the per-spot evidence is:
+$$
+z_i = \sum_{k=1}^K S_{ik} \sum_{d=1}^D X_{id} B_{kd} = \sum_k S_{ik}(XB^\top)_{ik}
+$$
+
+### Optimization Algorithm
+
+The package uses an alternating FISTA approach:
+
+1. **X-step**: Optimize mixture proportions with fixed B
+   - Compute gradients of data term and TV penalty
+   - FISTA update with momentum and simplex projection
+   
+2. **B-step**: Optimize dictionary with fixed X
+   - Only data gradient (no regularization on B)
+   - FISTA update with column-simplex projection
+
+3. **w-step** (optional): Optimize edge weights via LP
+   - Minimize weighted total variation
+   - Subject to: $w_{\min} \leq w \leq w_{\max}$ and $|A|^\top w = \mathbf{1}$
+
+## Detailed Example
+
+### Data Preparation
+
+```{r data_prep, eval=FALSE}
+library(spatialTV)
+library(ggplot2)
+
+# Simulate example data or load real data
+data(example_S_small)  # Cell type scores
+data(example_A_small)  # Spatial graph
+
+S <- example_S_small
+A <- example_A_small
+
+dim(S)  # 100 spots × 19 cell types
+dim(A)  # ~300 edges × 100 spots
+```
+
+### Building the Spatial Graph
+
+For real data with coordinates:
+
+```{r spatial_graph, eval=FALSE}
+# Assuming you have coordinates
+coords <- cbind(x = runif(100, 0, 10), y = runif(100, 0, 10))
+
+# Build Delaunay triangulation
+A <- build_spatial_graph(coords, method = "delaunay")
+
+# Check graph properties
+cat("Number of edges:", nrow(A), "\n")
+cat("Average degree:", 2 * nrow(A) / ncol(A), "\n")
+```
+
+### Dictionary Initialization
+
+```{r init_dict, eval=FALSE}
+# Method 1: K-means clustering (recommended)
+B_kmeans <- initialize_dictionary(S, D = 3, method = "kmeans", seed = 123)
+
+# Method 2: Random initialization
+B_random <- initialize_dictionary(S, D = 3, method = "random", seed = 123)
+
+# Method 3: Uniform initialization
+B_uniform <- initialize_dictionary(S, D = 3, method = "uniform")
+
+# Check constraints
+colSums(B_kmeans)  # Should be all 1s
+min(B_kmeans)       # Should be >= 1e-6
+```
+
+### Basic Optimization
+
+```{r basic_opt, eval=FALSE}
+# Fit model with fixed uniform weights
+result <- fit_spatial_mixture(
+  S = S,
+  A = A,
+  B = B_kmeans,
+  lambda = 2.0,              # TV regularization strength
+  delta = 1e-6,              # Soft-L1 smoothing
+  it_X = 1500,               # Max iterations for X
+  it_B = 500,                # Max iterations for B
+  log_every_X = 250          # Logging frequency
+)
+
+# Print summary
+print(result)
+
+# Check objective value
+cat("Objective:", result$obj, "\n")
+cat("NLL:", result$nll, "\n")
+cat("TV:", result$tv, "\n")
+```
+
+### Adaptive Weight Learning
+
+```{r adaptive, eval=FALSE}
+# Requires CVXR package
+# install.packages("CVXR")
+
+result_adaptive <- fit_spatial_mixture_adaptive(
+  S = S,
+  A = A,
+  B_init = B_kmeans,
+  lambda = 2.0,
+  outer_iter = 5,            # Number of alternating iterations
+  wmin = 0.01,               # Minimum edge weight
+  wmax = 0.50,               # Maximum edge weight
+  learn_weights = TRUE
+)
+
+# Check convergence
+print(result_adaptive$history)
+
+# Plot objective over iterations
+plot(result_adaptive$history$iter, 
+     result_adaptive$history$obj,
+     type = "b", xlab = "Iteration", ylab = "Objective")
+
+# Examine weight distribution
+hist(result_adaptive$w, breaks = 30, 
+     main = "Edge Weight Distribution",
+     xlab = "Weight", col = "skyblue")
+```
+
+### Extracting Results
+
+```{r extract_results, eval=FALSE}
+# Get mixture components
+X <- result$X  # N x D matrix
+
+# Convert to cell type proportions
+cell_props <- components_to_celltypes(X, result$B)
+dim(cell_props)  # N x K
+
+# Get dominant cell type per spot
+dominant <- get_dominant_celltype(X, result$B, 
+                                  cell_type_names = colnames(S))
+table(dominant)
+
+# Get top 3 cell types per spot
+top_types <- get_top_celltypes(X, result$B, K = 3,
+                               cell_type_names = colnames(S))
+head(top_types$types)
+head(top_types$proportions)
+```
+
+## Visualization
+
+### Spatial Maps
+
+```{r viz_spatial, eval=FALSE}
+library(ggplot2)
+
+# Prepare data frame
+plot_df <- data.frame(
+  x = coords[, 1],
+  y = coords[, 2],
+  celltype = dominant
+)
+
+# Plot dominant cell types
+ggplot(plot_df, aes(x = x, y = y, color = celltype)) +
+  geom_point(size = 2) +
+  coord_fixed() +
+  theme_minimal() +
+  labs(title = "Spatial Cell Type Map")
+
+# Plot specific cell type proportion
+plot_df$granule_prop <- cell_props[, "Granule"]
+
+ggplot(plot_df, aes(x = x, y = y, color = granule_prop)) +
+  geom_point(size = 2) +
+  scale_color_viridis_c() +
+  coord_fixed() +
+  theme_minimal() +
+  labs(title = "Granule Cell Proportion")
+```
+
+### Convergence Diagnostics
+
+```{r viz_convergence, eval=FALSE}
+# For adaptive model
+library(ggplot2)
+library(tidyr)
+
+# Plot multiple metrics
+hist_long <- pivot_longer(
+  result_adaptive$history,
+  cols = c(obj, nll, tv),
+  names_to = "metric",
+  values_to = "value"
+)
+
+ggplot(hist_long, aes(x = iter, y = value, color = metric)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~metric, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Convergence Over Iterations")
+```
+
+## Choosing Hyperparameters
+
+### Regularization Strength (lambda)
+
+The `lambda` parameter controls the trade-off between data fidelity and spatial smoothness:
+
+- **Small lambda** (e.g., 0.1-1): Less smoothing, more detailed patterns
+- **Medium lambda** (e.g., 1-5): Balanced, recommended for most applications
+- **Large lambda** (e.g., 5-20): Strong smoothing, may over-regularize
+
+```{r tune_lambda, eval=FALSE}
+lambda_values <- c(0.5, 1, 2, 5, 10)
+results <- list()
+
+for (lam in lambda_values) {
+  results[[as.character(lam)]] <- fit_spatial_mixture(
+    S = S, A = A, B = B_kmeans,
+    lambda = lam,
+    it_X = 1000,
+    log_every_X = 0  # Suppress logging
+  )
+}
+
+# Compare metrics
+sapply(results, function(r) {
+  c(obj = r$obj, nll = r$nll, tv = r$tv)
+})
+```
+
+### Number of Components (D)
+
+Choose D based on:
+- **Biological knowledge**: Expected number of distinct microenvironments
+- **Model selection**: Cross-validation or information criteria
+- **Practical constraint**: Typically D = 3-8
+
+```{r tune_D, eval=FALSE}
+D_values <- c(2, 3, 4, 5)
+results_D <- list()
+
+for (D in D_values) {
+  B_init <- initialize_dictionary(S, D = D, method = "kmeans")
+  results_D[[as.character(D)]] <- fit_spatial_mixture(
+    S = S, A = A, B = B_init,
+    lambda = 2.0,
+    log_every_X = 0
+  )
+}
+
+# Compare objectives
+sapply(results_D, `[[`, "obj")
+```
+
+## Performance Metrics
+
+```{r metrics, eval=FALSE}
+# Compute comprehensive metrics
+metrics <- result_adaptive$final_metrics
+
+# Interpretation:
+# - neighbor_agreement: Fraction of edges with same dominant type (higher is smoother)
+# - entropy: 0 = deterministic, 1 = uniform (lower is sharper)
+# - sharpness: Mean of max proportion per spot (higher is more confident)
+
+print(metrics)
+```
+
+## Tips for Production Use
+
+1. **Start with uniform weights**: Use `fit_spatial_mixture()` first
+2. **Use adaptive weights selectively**: Only when edges have different importance
+3. **Monitor convergence**: Check that objective decreases monotonically
+4. **Validate biologically**: Compare with known markers and spatial structure
+5. **Consider computation**: Adaptive mode slower due to LP solve (~2-3x)
+
+## Session Info
+
+```{r sessioninfo}
+sessionInfo()
+```
+
+## References
+
+1. Beck, A. and Teboulle, M. (2009). "A Fast Iterative Shrinkage-Thresholding Algorithm for Linear Inverse Problems." *SIAM Journal on Imaging Sciences*, 2(1), 183-202.
+
+2. Cable, D. M., et al. (2021). "Robust decomposition of cell type mixtures in spatial transcriptomics." *Nature Biotechnology*.
+
+3. Rudin, L. I., Osher, S., & Fatemi, E. (1992). "Nonlinear total variation based noise removal algorithms." *Physica D: nonlinear phenomena*, 60(1-4), 259-268.
