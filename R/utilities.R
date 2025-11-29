@@ -225,3 +225,157 @@ print.spatialTV_adaptive <- function(x, ...) {
   }
   invisible(x)
 }
+
+
+#' Plot Component Proportions Across Space
+#'
+#' Creates high-quality spatial visualizations of mixture component proportions.
+#'
+#' @param X Mixture matrix (N x D)
+#' @param coords Spatial coordinates (N x 2 matrix)
+#' @param point_size Point size for plotting. Default: 2.5
+#' @param color_palette Color palette to use. Options: "viridis" (default),
+#'   "magma", "plasma", "inferno", "cividis", "rocket", "mako", "turbo"
+#' @param ncol Number of columns in the grid layout. Default: 2
+#' @param alpha Transparency level (0-1). Default: 0.9
+#' @param add_contours Add contour lines. Default: FALSE
+#' @param contour_bins Number of contour bins. Default: 10
+#' @param show_colorbar Show color bar legend. Default: TRUE
+#' @param title_prefix Prefix for subplot titles. Default: "Component"
+#' @param high_res Use high-resolution settings. Default: TRUE
+#'
+#' @return A ggplot object (if single component) or grid of plots (if multiple)
+#'
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' # After fitting model
+#' result <- fit_spatial_mixture(S, A, B, lambda = 2)
+#'
+#' # Basic plot
+#' plot_components_spatial(result$X, coords)
+#'
+#' # Enhanced plot with custom settings
+#' plot_components_spatial(
+#'   result$X,
+#'   coords,
+#'   point_size = 3,
+#'   color_palette = "magma",
+#'   ncol = 3,
+#'   add_contours = TRUE
+#' )
+#'
+#' # Save high-quality PDF
+#' p <- plot_components_spatial(result$X, coords)
+#' ggsave("components.pdf", p, width = 10, height = 8, dpi = 300)
+#' }
+plot_components_spatial <- function(X,
+                                   coords,
+                                   point_size = 2.5,
+                                   color_palette = "viridis",
+                                   ncol = 2,
+                                   alpha = 0.9,
+                                   add_contours = FALSE,
+                                   contour_bins = 10,
+                                   show_colorbar = TRUE,
+                                   title_prefix = "Component",
+                                   high_res = TRUE) {
+
+  # Check if ggplot2 is available
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required. Install with: install.packages('ggplot2')")
+  }
+
+  # Validate inputs
+  if (!is.matrix(X)) {
+    stop("X must be a matrix")
+  }
+  if (!is.matrix(coords) || ncol(coords) != 2) {
+    stop("coords must be an N x 2 matrix")
+  }
+  if (nrow(X) != nrow(coords)) {
+    stop("Number of rows in X must match number of rows in coords")
+  }
+
+  D <- ncol(X)
+  N <- nrow(X)
+
+  # Prepare data frame
+  plot_df <- data.frame(
+    x = coords[, 1],
+    y = coords[, 2],
+    X
+  )
+
+  # Set color scale function
+  color_scale <- switch(color_palette,
+    "viridis" = ggplot2::scale_color_viridis_c,
+    "magma" = function(...) ggplot2::scale_color_viridis_c(option = "magma", ...),
+    "plasma" = function(...) ggplot2::scale_color_viridis_c(option = "plasma", ...),
+    "inferno" = function(...) ggplot2::scale_color_viridis_c(option = "inferno", ...),
+    "cividis" = function(...) ggplot2::scale_color_viridis_c(option = "cividis", ...),
+    "rocket" = function(...) ggplot2::scale_color_viridis_c(option = "rocket", ...),
+    "mako" = function(...) ggplot2::scale_color_viridis_c(option = "mako", ...),
+    "turbo" = function(...) ggplot2::scale_color_viridis_c(option = "turbo", ...),
+    ggplot2::scale_color_viridis_c  # default
+  )
+
+  # Create individual plots
+  plots <- list()
+  for (d in 1:D) {
+    p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = x, y = y, color = X[, d])) +
+      ggplot2::geom_point(size = point_size, alpha = alpha) +
+      color_scale(
+        limits = c(0, 1),
+        name = "Proportion",
+        guide = if (show_colorbar) ggplot2::guide_colorbar(
+          barwidth = 1,
+          barheight = 8,
+          title.position = "top",
+          title.hjust = 0.5
+        ) else "none"
+      ) +
+      ggplot2::coord_fixed() +
+      ggplot2::theme_minimal(base_size = if (high_res) 14 else 12) +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = if (high_res) 16 else 14),
+        panel.grid.minor = ggplot2::element_blank(),
+        panel.grid.major = ggplot2::element_line(color = "gray90", linewidth = 0.3),
+        axis.title = ggplot2::element_text(face = "bold"),
+        legend.position = "right"
+      ) +
+      ggplot2::labs(
+        title = paste0(title_prefix, " ", d),
+        x = "X coordinate",
+        y = "Y coordinate"
+      )
+
+    # Add contours if requested
+    if (add_contours) {
+      p <- p + ggplot2::geom_contour(
+        ggplot2::aes(z = X[, d]),
+        bins = contour_bins,
+        color = "white",
+        alpha = 0.3,
+        linewidth = 0.3
+      )
+    }
+
+    plots[[d]] <- p
+  }
+
+  # Return single plot or grid
+  if (D == 1) {
+    return(plots[[1]])
+  } else {
+    # Check if gridExtra is available
+    if (!requireNamespace("gridExtra", quietly = TRUE)) {
+      warning("Package 'gridExtra' not found. Returning list of plots instead of grid.\n",
+              "Install with: install.packages('gridExtra')")
+      return(plots)
+    }
+
+    return(gridExtra::grid.arrange(grobs = plots, ncol = ncol))
+  }
+}

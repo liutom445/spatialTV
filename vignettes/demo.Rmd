@@ -1,0 +1,342 @@
+---
+title: "spatialTV Package Demo: Spatial Total Variation for Deconvolution"
+author: "Tom Liu"
+date: "`r Sys.Date()`"
+output: html_document
+fontsize: 11pt
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+# Introduction
+
+The **spatialTV** package implements spatial Total Variation (TV) regularization for spatial transcriptomics deconvolution. Given initial cell type estimates from methods like RCTD, spatialTV refines these estimates by enforcing spatial coherence while learning a low-rank mixture representation.
+
+## Method Overview
+
+The package implements a three-step workflow:
+
+1. **Input $S$**: Cell type likelihood scores from deconvolution (e.g., RCTD)
+2. **Build spatial graph $A$**: Delaunay triangulation of spatial coordinates
+3. **Optimize**: Learn mixture proportions $X$ and dictionary $B$ with TV regularization
+
+The objective function combines a negative log-likelihood term with a weighted Total Variation penalty:
+$$\min_{X,B} -\sum_{i=1}^N \log z_i + \lambda \sum_{e=1}^m w_e \sum_{d=1}^D \sqrt{(AX)_{ed}^2 + \delta}$$
+
+where $z_i = \sum_k S_{ik}(XB^\top)_{ik}$ and $X$ represents spot-level mixture proportions while $B$ is the cell type dictionary.
+
+## Installation
+
+Install the spatialTV package from GitHub:
+
+```{r install, eval=FALSE}
+# Install from GitHub
+devtools::install_github("liutom445/spatialTV")
+```
+
+Load required packages:
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(spatialTV)
+  library(spacexr)      # For RCTD
+  library(Matrix)
+  library(ggplot2)
+  library(gridExtra)    # For multi-panel plots
+  library(tidyr)        # For data reshaping
+})
+```
+
+# From RCTD to $S$
+
+We extract $S$ from `myRCTD@results$singlet_scores` and transform scores with a softmax-like temperature (`SCALE`) so rows remain positive (row sums not enforced).
+
+```{r}
+myRCTD <- readRDS("myRCTD_08_updated.rds")
+n <- myRCTD@cell_type_info$info[[3]]
+S <- matrix(0, nrow(myRCTD@results$results_df), n)
+rownames(S) <- rownames(myRCTD@results$results_df)
+colnames(S) <- myRCTD@cell_type_info$info[[2]]
+
+SCALE <- 10
+for (i in seq_len(nrow(S))) {
+  sc <- myRCTD@results$singlet_scores[[i]]
+  S[i, names(sc)] <- exp((min(sc) - sc) / SCALE)
+}
+```
+
+Quick visual check (using RCTD palette and geoms):
+
+```{r}
+plot_df <- cbind(myRCTD@spatialRNA@coords, S)
+ggplot(plot_df, aes(x, y, color = Granule)) +
+  geom_point(size = 0.6, alpha = 0.9) +
+  theme_classic()
+```
+
+Focus subset (here we keep all spots):
+
+```{r}
+barcodes <- rownames(S)
+S_mat <- S[barcodes, , drop=FALSE]
+```
+
+# Spatial graph $A$ (Delaunay)
+
+We build a planar graph using the **spatialTV** package's `build_spatial_graph()` function. It creates a signed incidence matrix $A$ from a Delaunay triangulation: one row per edge with $\{+1,-1\}$ at the two incident spots.
+
+```{r build-graph}
+# Extract spatial coordinates
+coords <- myRCTD@spatialRNA@coords[barcodes, ]
+
+# Build spatial graph using spatialTV package function
+A <- build_spatial_graph(coords, method = "delaunay")
+
+# Check dimensions
+cat("Graph dimensions:\n")
+cat("  Number of spots (N):", ncol(A), "\n")
+cat("  Number of edges (m):", nrow(A), "\n")
+cat("  Density:", sprintf("%.2f%%", 100 * sum(A != 0) / length(A)), "\n")
+```
+
+# Initialize Dictionary $B$
+
+The dictionary matrix $B$ defines mixture components. We use **spatialTV's** `initialize_dictionary()` which performs k-means clustering on $S$ to get data-driven initial components.
+
+```{r initialize-B}
+# Number of mixture components
+D <- 3
+
+# Initialize B using k-means on S
+B <- initialize_dictionary(S_mat, D = D, method = "kmeans", seed = 42)
+
+# Check constraints
+cat("Dictionary dimensions: K x D =", paste(dim(B), collapse = " x "), "\n")
+cat("Min value (should be >= eps):", sprintf("%.2e", min(B)), "\n")
+```
+
+# Fit Spatial Mixture Model
+
+Now we run the main optimization using `fit_spatial_mixture()`. This alternates between optimizing mixture proportions $X$ and dictionary $B$ with spatial Total Variation regularization.
+
+```{r fit-model}
+# Set regularization parameter
+lambda <- 1
+
+# Fit the model
+result <- fit_spatial_mixture(
+  S = S_mat,
+  A = A,
+  B = B,
+  lambda = lambda,
+  it_X = 5000,
+  it_B = 1000,
+  log_every_X = 0,    # Set to 0 to suppress iteration logs
+  log_every_B = 0
+)
+
+# Print results summary
+print(result)
+```
+
+# Visualize Results
+
+## Mixture Proportions
+
+Visualize the optimized mixture components across space using the enhanced plotting function:
+
+```{r plot-mixtures, fig.width=10, fig.height=4}
+# Extract mixture matrix X
+X <- result$X
+
+# Use the enhanced plotting function from spatialTV
+plot_components_spatial(
+  X = X,
+  coords = coords,
+  point_size = 0.8,
+  color_palette = "magma",
+  ncol = 3,
+  alpha = 0.9,
+  high_res = TRUE,
+  title_prefix = "Component"
+)
+```
+
+For publication-quality figures, you can also add contour lines and adjust styling:
+
+```{r plot-mixtures-enhanced, fig.width=10, fig.height=4, eval=FALSE}
+# Enhanced version with contours
+plot_components_spatial(
+  X = X,
+  coords = coords,
+  point_size = 1.2,
+  color_palette = "magma",
+  ncol = 3,
+  alpha = 0.95,
+  add_contours = TRUE,
+  contour_bins = 12,
+  high_res = TRUE
+)
+```
+
+## Dominant Component
+
+Show which component is dominant at each spot:
+
+```{r plot-dominant}
+# Get dominant component
+dominant_component <- apply(X, 1, which.max)
+
+plot_df$Dominant <- factor(dominant_component)
+
+ggplot(plot_df, aes(x = x, y = y, color = Dominant)) +
+  geom_point(size = 0.6, alpha = 0.9) +
+  scale_color_viridis(discrete = TRUE, option = "plasma") +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  labs(title = "Dominant Mixture Component per Spot",
+       color = "Component")
+```
+
+## Cell Type Composition
+
+Convert mixture representation back to cell type proportions and visualize:
+
+```{r plot-celltypes}
+# Convert to cell type proportions
+cell_type_props <- components_to_celltypes(result$X, result$B)
+
+# Get dominant cell type per spot
+cell_type_names <- colnames(S_mat)
+dominant_celltype <- get_dominant_celltype(
+  result$X,
+  result$B,
+  cell_type_names = cell_type_names
+)
+
+# Plot dominant cell type
+plot_df$CellType <- dominant_celltype
+
+ggplot(plot_df, aes(x = x, y = y, color = CellType)) +
+  geom_point(size = 0.6, alpha = 0.9) +
+  theme_classic() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right"
+  ) +
+  labs(title = "Dominant Cell Type per Spot (from spatialTV)")
+```
+
+## Optimized Dictionary
+
+Examine the learned dictionary to see which cell types contribute to each component:
+
+```{r plot-dictionary, fig.height=5}
+# Prepare dictionary for plotting
+B_df <- as.data.frame(result$B)
+colnames(B_df) <- paste0("Component_", 1:D)
+B_df$CellType <- cell_type_names
+
+# Reshape for plotting
+B_long <- pivot_longer(
+  B_df,
+  cols = starts_with("Component"),
+  names_to = "Component",
+  values_to = "Weight"
+)
+
+# Plot
+ggplot(B_long, aes(x = CellType, y = Weight, fill = Component)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ Component, nrow = 3) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.background = element_blank()
+  ) +
+  labs(
+    title = "Learned Dictionary: Cell Type Contributions to Each Component",
+    y = "Weight",
+    x = "Cell Type"
+  )
+```
+
+## Saving High-Quality Figures
+
+Export publication-ready figures:
+
+```{r save-figures, eval=FALSE}
+# Save component plots as PDF (vector graphics)
+p <- plot_components_spatial(
+  X = result$X,
+  coords = coords,
+  point_size = 1.5,
+  color_palette = "magma",
+  ncol = 3,
+  alpha = 0.95,
+  high_res = TRUE
+)
+
+ggsave("mixture_components.pdf", p, width = 12, height = 4, dpi = 300)
+
+# Or save as high-resolution PNG
+ggsave("mixture_components.png", p, width = 12, height = 4, dpi = 600)
+```
+
+# Model Diagnostics
+
+Check objective function components:
+
+```{r diagnostics}
+cat("Model Fit Summary:\n")
+cat("==================\n")
+cat("Objective value:", sprintf("%.6e", result$obj), "\n")
+cat("  - NLL component:", sprintf("%.6e", result$nll), "\n")
+cat("  - TV penalty:", sprintf("%.6e", result$tv), "\n")
+cat("  - Ratio (TV/NLL):", sprintf("%.3f", result$tv / result$nll), "\n\n")
+
+cat("Optimization Parameters:\n")
+cat("  Lambda (TV weight):", lambda, "\n")
+cat("  X step size:", sprintf("%.2e", result$stepX), "\n")
+cat("  B step size:", sprintf("%.2e", result$stepB), "\n")
+```
+
+# Summary
+
+This demo showcased the complete **spatialTV** workflow:
+
+1. ✅ Extracted cell type scores $S$ from RCTD deconvolution
+2. ✅ Built spatial graph $A$ using `build_spatial_graph()`
+3. ✅ Initialized dictionary $B$ using `initialize_dictionary()`
+4. ✅ Optimized with `fit_spatial_mixture()` using TV regularization
+5. ✅ Visualized mixture components and cell type compositions
+
+## Key Features
+
+- **Spatial coherence**: TV regularization enforces smooth transitions between neighboring spots
+- **Low-rank representation**: Dictionary learning reduces noise and finds interpretable patterns
+- **Data-driven**: K-means initialization adapts to your specific tissue architecture
+- **Fast optimization**: C++ implementation with FISTA algorithm
+
+## Next Steps
+
+To further explore your results:
+
+- **Adjust `lambda`** to control spatial smoothness vs data fit
+- **Try different `D`** (number of components) to capture tissue complexity
+- **Use `fit_spatial_mixture_adaptive()`** for adaptive edge weights
+- **Explore color palettes** in `plot_components_spatial()`: "viridis", "magma", "plasma", "inferno", "rocket", "mako"
+- **Add contours** with `add_contours = TRUE` to visualize spatial gradients
+- **Export high-quality figures** using `ggsave()` for publications
+
+For more information, visit: https://github.com/liutom445/spatialTV
+
