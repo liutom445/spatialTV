@@ -36,6 +36,6 @@ Suggests:
     covr
 SystemRequirements: C++11
 VignetteBuilder: knitr
-RoxygenNote: 7.2.0
+RoxygenNote: 7.3.2
 URL: https://github.com/liutom445/spatialTV
 BugReports: https://github.com/liutom445/spatialTV/issues
