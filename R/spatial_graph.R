@@ -51,9 +51,9 @@ build_spatial_graph <- function(coords, method = "delaunay") {
     if (!requireNamespace("interp", quietly = TRUE)) {
       stop("Package 'interp' is required for Delaunay triangulation. Please install it.")
     }
-    
-    # Build triangulation
-    tri <- interp::tri.mesh(coords)
+
+    # Build triangulation (tri.mesh expects separate x and y vectors)
+    tri <- interp::tri.mesh(coords[, 1], coords[, 2])
     m <- nrow(tri$arcs)
     
     # Create sparse incidence matrix
