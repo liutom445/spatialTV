@@ -277,5 +277,5 @@ MIT License - see LICENSE file for details.
 
 **Author**: Tom Liu
 **Email**: liutom@umich.edu
-**Repository**: [https://github.com/liutom445/tvfista](https://github.com/liutom445/tvfista)
-**Issues**: Please report bugs via [GitHub Issues](https://github.com/liutom445/tvfista/issues)
+**Repository**: [https://github.com/liutom445/tvfista](https://github.com/liutom445/spatialTV)
+**Issues**: Please report bugs via [GitHub Issues](https://github.com/liutom445/spatialTV/issues)
